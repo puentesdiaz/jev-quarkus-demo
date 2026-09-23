@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jev Ticket Triage</title>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --fg:#1d1d1b; --muted:#6b6b66; --line:#e3e2dd; --accent:#3b5bdb;
+          --high:#c92a2a; --normal:#e67700; --low:#2b8a3e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --card:#1f1f1d; --fg:#ecebe6; --muted:#9a9993; --line:#33332f; --accent:#748ffc; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:860px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; } p.sub { color:var(--muted); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  textarea { width:100%; min-height:110px; font:inherit; color:inherit; background:transparent;
+             border:1px solid var(--line); border-radius:8px; padding:10px; resize:vertical; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--fg);
+           border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .chips button { font-size:13px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:99px; font-weight:600; font-size:13px; color:#fff; }
+  .HIGH { background:var(--high); } .NORMAL { background:var(--normal); } .LOW { background:var(--low); }
+  .kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:12px 0; }
+  .kv div span { display:block; color:var(--muted); font-size:12px; }
+  .kv div b { font-size:18px; }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:6px 4px; border-top:1px solid var(--line); vertical-align:middle; }
+  td:first-child { width:130px; color:var(--muted); }
+  pre { overflow:auto; font-size:12px; color:var(--muted); }
+  .err { color:var(--high); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Jev Ticket Triage</h1>
+  <p class="sub">Quarkus + Jev (TypeSafe System One). Jev judges the ticket; Java code decides what to do.</p>
+
+  <div class="card">
+    <textarea id="msg" placeholder="Pega un mensaje de cliente…"></textarea>
+    <div class="row chips" id="examples"></div>
+    <div class="row"><button class="primary" id="go">Triage</button><span id="status"></span></div>
+  </div>
+
+  <div id="out"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+fetch('/api/triage/examples').then(r => r.json()).then(list => {
+  list.forEach(text => {
+    const b = document.createElement('button');
+    b.textContent = text.length > 48 ? text.slice(0, 48) + '…' : text;
+    b.title = text;
+    b.onclick = () => { $('msg').value = text; run(); };
+    $('examples').appendChild(b);
+  });
+});
+
+$('go').onclick = run;
+
+async function run() {
+  const message = $('msg').value.trim();
+  if (!message) return;
+  $('status').textContent = 'Asking Jev…';
+  $('out').innerHTML = '';
+  try {
+    const res = await fetch('/api/triage', { method:'POST', headers:{'Content-Type':'application/json'},
+                                             body: JSON.stringify({ message }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || JSON.stringify(data));
+    render(data);
+    $('status').textContent = '';
+  } catch (e) {
+    $('status').innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+  }
+}
+
+function bar(p) { return `<div class="bar"><i style="width:${Math.round(p * 100)}%"></i></div>`; }
+
+function render(d) {
+  const j = d.judgments;
+  const rows = Object.entries(j).map(([id, a]) => {
+    let value, p;
+    if (a.type === 'noul') { value = `p(yes) = ${a.noul.toFixed(2)}`; p = a.noul; }
+    else if (a.type === 'choice') { value = `${a.choice} · confidence ${a.confidence.toFixed(2)}`; p = a.probabilities[a.choice]; }
+    else { const top = Object.keys(a.legend).length - 1;
+           value = `${a.score.toFixed(2)} / ${top} · confidence ${a.confidence.toFixed(2)}`; p = a.score / top; }
+    return `<tr><td>${esc(id)} <small>(${a.type})</small></td><td>${esc(value)}</td><td style="width:30%">${bar(p)}</td></tr>`;
+  }).join('');
+
+  $('out').innerHTML = `
+    <div class="card">
+      <span class="badge ${d.priority}">${d.priority}</span>
+      <div class="kv">
+        <div><span>Queue</span><b>${esc(d.queue)}</b></div>
+        <div><span>Escalate to human</span><b>${d.escalateToHuman ? 'Yes' : 'No'}</b></div>
+        <div><span>Latency</span><b>${d.elapsedMs} ms</b></div>
+        <div><span>Tokens (in / out)</span><b>${d.usage.inputTokens} / ${d.usage.outputTokens}</b></div>
+      </div>
+      <ul>${d.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+    </div>
+    <div class="card"><b>Jev judgments</b> <small>(${esc(d.model)})</small>
+      <table>${rows}</table>
+      <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify(d, null, 2))}</pre></details>
+    </div>`;
+}
+</script>
+</body>
+</html>
